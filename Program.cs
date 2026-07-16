@@ -182,8 +182,8 @@ internal sealed record SteamPaths(string InstallPath, string LocalVdfPath, strin
 
 internal static class LicenseClient
 {
-    private const string BaseUrl = "https://hvh.baby";
-    private const string KeyPath = "/key/";
+    private const string BaseUrl = "";
+    private const string KeyPath = " ";
     private const string SharedSecret = " "; 
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
 
