@@ -32,16 +32,9 @@ internal sealed class LoginForm : Form
         UseSystemPasswordChar = false
     };
 
-    private readonly CheckBox _autoStartBox = new()
-    {
-        AutoSize = true,
-        Location = new Point(24, 94),
-        Text = "自动启动 Steam（可能触发火绒360安全软件提示）"
-    };
-
     private readonly Button _loginButton = new()
     {
-        Location = new Point(24, 126),
+        Location = new Point(24, 94),
         Size = new Size(332, 36),
         Text = "登录 Steam"
     };
@@ -69,7 +62,6 @@ internal sealed class LoginForm : Form
             Text = "卡密"
         });
         Controls.Add(_keyBox);
-        Controls.Add(_autoStartBox);
         Controls.Add(_loginButton);
         Controls.Add(_accountLabel);
 
@@ -83,18 +75,6 @@ internal sealed class LoginForm : Form
         if (licenseKey.Length == 0)
         {
             MessageBox.Show(this, "请输入卡密。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        var autoStart = _autoStartBox.Checked;
-        if (autoStart && MessageBox.Show(
-                this,
-                "自动启动 Steam 可能触发 360 等安全软件对 Steam 的 steamwebhelper.exe 报出“进程注入”提示。是否继续？",
-                "自动启动风险提示",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
-        {
             return;
         }
 
@@ -116,26 +96,14 @@ internal sealed class LoginForm : Form
             SetStatus("正在写入登录信息...");
             await Task.Run(() => SteamLogin.Apply(paths, account.User, token.SteamId, normalizedToken));
 
-            if (autoStart)
-            {
-                SetStatus("正在启动 Steam...");
-                SteamProcess.Start();
-                MessageBox.Show(
-                    this,
-                    $"已启动 Steam：{account.User}",
-                    Text,
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-            }
-            else
-            {
-                MessageBox.Show(
-                    this,
-                    $"登录信息已写入：{account.User}\n请手动打开 Steam。",
-                    Text,
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-            }
+            SetStatus("正在启动 Steam...");
+            SteamProcess.Start(paths, account.User);
+            MessageBox.Show(
+                this,
+                $"已启动 Steam：{account.User}",
+                Text,
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
@@ -160,7 +128,6 @@ internal sealed class LoginForm : Form
     private void SetBusy(bool busy)
     {
         _keyBox.Enabled = !busy;
-        _autoStartBox.Enabled = !busy;
         _loginButton.Enabled = !busy;
         if (!busy)
         {
@@ -183,8 +150,8 @@ internal sealed record SteamPaths(string InstallPath, string LocalVdfPath, strin
 internal static class LicenseClient
 {
     private const string BaseUrl = "";
-    private const string KeyPath = " ";
-    private const string SharedSecret = " "; 
+    private const string KeyPath = "";
+    private const string SharedSecret = ""; 
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
 
     public static async Task<SteamAccount> ResolveAsync(string licenseKey)
@@ -522,18 +489,38 @@ internal static class SteamProcess
             Thread.Sleep(1000);
         }
 
+        KillProcesses("steam");
+        KillProcesses("steamwebhelper");
+
+        for (var i = 0; i < 5; i++)
+        {
+            if (!IsRunning())
+            {
+                return;
+            }
+
+            Thread.Sleep(1000);
+        }
+
         throw new InvalidOperationException("Steam 未能正常退出，请手动退出 Steam 后重试。");
     }
 
-    public static void Start()
+    public static void Start(SteamPaths paths, string accountName)
     {
+        var steamExe = Path.Combine(paths.InstallPath, "steam.exe");
+        if (!File.Exists(steamExe))
+        {
+            throw new InvalidOperationException($"找不到 steam.exe：\"{steamExe}\"");
+        }
+
         try
         {
             using var process = Process.Start(new ProcessStartInfo
             {
-                FileName = "steam://open/main",
-                UseShellExecute = true
-            });
+                FileName = steamExe,
+                WorkingDirectory = paths.InstallPath,
+                UseShellExecute = false
+            }.AddArguments("-login", accountName));
             if (process is null)
             {
                 throw new InvalidOperationException("Steam 启动失败。");
@@ -562,6 +549,24 @@ internal static class SteamProcess
             foreach (var process in processes)
             {
                 process.Dispose();
+            }
+        }
+    }
+
+    private static void KillProcesses(string processName)
+    {
+        foreach (var process in Process.GetProcessesByName(processName))
+        {
+            using (process)
+            {
+                try
+                {
+                    process.Kill(true);
+                    process.WaitForExit(3000);
+                }
+                catch
+                {
+                }
             }
         }
     }
