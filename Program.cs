@@ -13,6 +13,20 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            var message = (e.ExceptionObject as Exception)?.Message ?? "未知错误";
+            MessageBox.Show(message, "HVH.lat Steam 上号器", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        };
+        Application.ThreadException += (_, e) =>
+        {
+            MessageBox.Show(e.Exception.Message, "HVH.lat Steam 上号器", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        };
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            e.SetObserved();
+        };
         ApplicationConfiguration.Initialize();
         MessageBox.Show(
             "hvh.lat上号器全网最小上号器无毒无后门！188kb！github已开源！",
@@ -25,6 +39,9 @@ internal static class Program
 
 internal sealed class LoginForm : Form
 {
+    private bool _isBusy;
+    private readonly CancellationTokenSource _cts = new();
+
     private readonly TextBox _keyBox = new()
     {
         Location = new Point(24, 55),
@@ -32,9 +49,16 @@ internal sealed class LoginForm : Form
         UseSystemPasswordChar = false
     };
 
+    private readonly CheckBox _deleteHistoryCheck = new()
+    {
+        Location = new Point(24, 86),
+        Size = new Size(332, 22),
+        Text = "删除所有历史登录记录"
+    };
+
     private readonly Button _loginButton = new()
     {
-        Location = new Point(24, 94),
+        Location = new Point(24, 112),
         Size = new Size(332, 36),
         Text = "登录 Steam"
     };
@@ -62,15 +86,25 @@ internal sealed class LoginForm : Form
             Text = "卡密"
         });
         Controls.Add(_keyBox);
+        Controls.Add(_deleteHistoryCheck);
         Controls.Add(_loginButton);
         Controls.Add(_accountLabel);
 
         AcceptButton = _loginButton;
         _loginButton.Click += LoginButton_Click;
+        FormClosing += (_, _) =>
+        {
+            if (_isBusy)
+            {
+                _cts.Cancel();
+            }
+        };
     }
 
     private async void LoginButton_Click(object? sender, EventArgs e)
     {
+        if (_isBusy) return;
+
         var licenseKey = _keyBox.Text.Trim();
         if (licenseKey.Length == 0)
         {
@@ -78,24 +112,40 @@ internal sealed class LoginForm : Form
             return;
         }
 
+        _isBusy = true;
         SetBusy(true);
+        var ct = _cts.Token;
         try
         {
+            ct.ThrowIfCancellationRequested();
             SetStatus("正在解析卡密...");
-            var account = await LicenseClient.ResolveAsync(licenseKey);
+            var account = await LicenseClient.ResolveAsync(licenseKey, ct);
+            ct.ThrowIfCancellationRequested();
             _accountLabel.Text = "正在登录: " + account.User;
             var normalizedToken = NormalizeToken(account.Token);
             var token = TokenValidator.Validate(normalizedToken);
 
+            ct.ThrowIfCancellationRequested();
             SetStatus("正在查找 Steam...");
             var paths = SteamLocator.Find();
 
+            ct.ThrowIfCancellationRequested();
             SetStatus("正在关闭 Steam...");
-            await Task.Run(() => SteamProcess.Stop(paths));
+            await Task.Run(() => SteamProcess.Stop(paths), ct);
 
+            ct.ThrowIfCancellationRequested();
             SetStatus("正在写入登录信息...");
-            await Task.Run(() => SteamLogin.Apply(paths, account.User, token.SteamId, normalizedToken));
+            if (_deleteHistoryCheck.Checked)
+            {
+                var loginUsersPath = Path.Combine(paths.ConfigPath, "loginusers.vdf");
+                if (File.Exists(loginUsersPath))
+                {
+                    File.Delete(loginUsersPath);
+                }
+            }
+            await Task.Run(() => SteamLogin.Apply(paths, account.User, token.SteamId, normalizedToken), ct);
 
+            ct.ThrowIfCancellationRequested();
             SetStatus("正在启动 Steam...");
             SteamProcess.Start(paths, account.User);
             MessageBox.Show(
@@ -105,6 +155,11 @@ internal sealed class LoginForm : Form
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
+        catch (OperationCanceledException)
+        {
+            _accountLabel.Text = "";
+            SetStatus("已取消");
+        }
         catch (Exception ex)
         {
             _accountLabel.Text = "";
@@ -113,6 +168,7 @@ internal sealed class LoginForm : Form
         }
         finally
         {
+            _isBusy = false;
             SetBusy(false);
         }
     }
@@ -122,7 +178,7 @@ internal sealed class LoginForm : Form
         return token.Trim().Replace(
             "EyAidHlwIjogIkpXVCIsICJhbGciOiAiRWREU0EiIH0",
             "eyAidHlwIjogIkpXVCIsICJhbGciOiAiRWREU0EiIH0",
-            StringComparison.Ordinal);
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private void SetBusy(bool busy)
@@ -151,10 +207,10 @@ internal static class LicenseClient
 {
     private const string BaseUrl = "";
     private const string KeyPath = "";
-    private const string SharedSecret = ""; 
+    private const string SharedSecret = " "; 
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
 
-    public static async Task<SteamAccount> ResolveAsync(string licenseKey)
+    public static async Task<SteamAccount> ResolveAsync(string licenseKey, CancellationToken cancellationToken = default)
     {
         var key = licenseKey.Trim();
         var url = $"{BaseUrl}{KeyPath}{Uri.EscapeDataString(key)}";
@@ -165,7 +221,7 @@ internal static class LicenseClient
         }
         request.Headers.UserAgent.ParseAdd("HVH.lat-Client/1.0");
 
-        using var response = await HttpClient.SendAsync(request);
+        using var response = await HttpClient.SendAsync(request, cancellationToken);
 
         if (response.StatusCode == HttpStatusCode.BadRequest)
         {
@@ -177,8 +233,13 @@ internal static class LicenseClient
             throw new InvalidOperationException("卡密不存在或服务器不匹配。");
         }
 
+        if (response.StatusCode == HttpStatusCode.Forbidden)
+        {
+            throw new InvalidOperationException("卡密签名校验失败，请联系客服。");
+        }
+
         response.EnsureSuccessStatusCode();
-        var raw = await response.Content.ReadAsByteArrayAsync();
+        var raw = await response.Content.ReadAsByteArrayAsync(cancellationToken);
         if (raw.Length <= 8)
         {
             throw new InvalidDataException("服务器返回的数据无效。");
@@ -187,7 +248,7 @@ internal static class LicenseClient
         using var input = new MemoryStream(raw, 8, raw.Length - 8, false);
         using var zlib = new ZLibStream(input, CompressionMode.Decompress);
         using var output = new MemoryStream();
-        await zlib.CopyToAsync(output);
+        await zlib.CopyToAsync(output, cancellationToken);
 
         using var document = JsonDocument.Parse(output.ToArray());
         var root = document.RootElement;
@@ -858,7 +919,10 @@ internal static class Vdf
     private static string Escape(string value)
     {
         return value.Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("\"", "\\\"", StringComparison.Ordinal);
+            .Replace("\"", "\\\"", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\t", "\\t", StringComparison.Ordinal);
     }
 
     private sealed class Parser
