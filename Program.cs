@@ -207,7 +207,7 @@ internal static class LicenseClient
 {
     private const string BaseUrl = "";
     private const string KeyPath = "";
-    private const string SharedSecret = " "; 
+    private const string SharedSecret = "";
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
 
     public static async Task<SteamAccount> ResolveAsync(string licenseKey, CancellationToken cancellationToken = default)
@@ -777,10 +777,10 @@ internal static class SteamConfig
 
     private static void WriteConfig(string path, string accountName, string steamId)
     {
-        var root = new Dictionary<string, object>(StringComparer.Ordinal);
+        var root = Vdf.LoadOrEmpty(path);
         var steam = EnsurePath(root, "InstallConfigStore", "Software", "Valve", "Steam");
-        steam["AutoUpdateWindowEnabled"] = "0";
-        steam["MTBF"] = Random.Shared.Next(100000000, 999999999).ToString();
+        SetValue(steam, "AutoUpdateWindowEnabled", "0");
+        SetValue(steam, "MTBF", Random.Shared.Next(100000000, 999999999).ToString());
         EnsureObject(steam, "Accounts")[accountName] = new Dictionary<string, object>
         {
             ["SteamID"] = steamId
@@ -794,7 +794,7 @@ internal static class SteamConfig
         var users = EnsureObject(root, "users");
         foreach (var user in users.Values.OfType<Dictionary<string, object>>())
         {
-            user["MostRecent"] = "0";
+            SetValue(user, "MostRecent", "0");
         }
 
         users[steamId] = new Dictionary<string, object>
@@ -832,14 +832,38 @@ internal static class SteamConfig
 
     private static Dictionary<string, object> EnsureObject(Dictionary<string, object> parent, string key)
     {
-        if (parent.TryGetValue(key, out var value) && value is Dictionary<string, object> existing)
+        var actualKey = FindKey(parent, key);
+        if (parent.TryGetValue(actualKey, out var value) && value is Dictionary<string, object> existing)
         {
             return existing;
         }
 
         var created = new Dictionary<string, object>(StringComparer.Ordinal);
-        parent[key] = created;
+        parent[actualKey] = created;
         return created;
+    }
+
+    private static void SetValue(Dictionary<string, object> values, string key, string value)
+    {
+        values[FindKey(values, key)] = value;
+    }
+
+    private static string FindKey(Dictionary<string, object> values, string key)
+    {
+        if (values.ContainsKey(key))
+        {
+            return key;
+        }
+
+        foreach (var existing in values.Keys)
+        {
+            if (string.Equals(existing, key, StringComparison.OrdinalIgnoreCase))
+            {
+                return existing;
+            }
+        }
+
+        return key;
     }
 }
 

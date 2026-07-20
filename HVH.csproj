@@ -11,9 +11,9 @@
     <Company>hvh.lat</Company>
     <Description>hvh.lat上号器</Description>
     <FileDescription>hvh.lat上号器</FileDescription>
-    <Version>1.1.0</Version>
-    <FileVersion>1.1.0.0</FileVersion>
-    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <Version>1.2.0</Version>
+    <FileVersion>1.2.0.0</FileVersion>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationIcon>icon.ico</ApplicationIcon>
